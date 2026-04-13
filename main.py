@@ -11,7 +11,7 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 GROUP_ID = -1003777573948
 TALLY_FORM_ID = "yPEDzx"
 
-# ===== SUPABASE FUNCTIONS (same as before) =====
+# ===== SUPABASE FUNCTIONS =====
 def supabase_query(table, filters=None):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     headers = {
@@ -60,7 +60,8 @@ def send_message(chat_id, text):
     except:
         pass
 
-def is_user_in_group(user_id):
+def get_chat_member(user_id):
+    """Direct API call to check if user is in the group"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChatMember"
     params = {"chat_id": GROUP_ID, "user_id": user_id}
     try:
@@ -72,9 +73,20 @@ def is_user_in_group(user_id):
         pass
     return False
 
+def get_group_members():
+    """Get list of current group members (approximate - works for groups under 200 members)"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChatMembersCount"
+    params = {"chat_id": GROUP_ID}
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.ok:
+            count = response.json().get("result", 0)
+            print(f"📊 Group has approximately {count} members")
+    except:
+        pass
+
 def get_updates(offset=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-    # IMPORTANT: Must include 'chat_member' in allowed_updates to receive join events! [citation:6]
     params = {"timeout": 20, "allowed_updates": ["message", "chat_member"]}
     if offset:
         params["offset"] = offset
@@ -86,7 +98,6 @@ def get_updates(offset=None):
 
 # ===== TRACK NEW MEMBERS USING chat_member UPDATE =====
 def handle_chat_member_update(update):
-    """Process when someone joins the group using chat_member update [citation:2]"""
     chat_member = update.get("chat_member", {})
     new_chat_member = chat_member.get("new_chat_member", {})
     old_chat_member = chat_member.get("old_chat_member", {})
@@ -94,14 +105,13 @@ def handle_chat_member_update(update):
     chat = chat_member.get("chat", {})
     chat_id = chat.get("id")
     
-    # Only process our target group
     if chat_id != GROUP_ID:
         return
     
     old_status = old_chat_member.get("status", "")
     new_status = new_chat_member.get("status", "")
     
-    # Check if this is a new member joining (status changed from left or kicked to member/administrator/creator) [citation:2]
+    # Check if this is a new member joining
     is_new_join = (old_status in ["left", "kicked"]) and (new_status in ["member", "administrator", "creator"])
     
     if is_new_join:
@@ -111,7 +121,6 @@ def handle_chat_member_update(update):
         
         print(f"👤 New member joined: {first_name} (ID: {user_id})")
         
-        # Store that we're waiting for ambassador code from this user
         waiting_for_code[user_id] = True
         
         send_message(chat_id, 
@@ -171,7 +180,7 @@ def process_wl_responses():
         telegram_user_id = response.get("telegram_user_id")
         
         if ambassador_code and telegram_user_id:
-            joined = is_user_in_group(telegram_user_id)
+            joined = get_chat_member(telegram_user_id)
             
             if joined:
                 award_point(ambassador_code, telegram_user_id)
@@ -239,11 +248,8 @@ def handle_command(chat_id, user_id, username, text):
 
 # ===== MESSAGE HANDLER FOR AMBASSADOR CODE =====
 def handle_message(chat_id, user_id, text):
-    user_id_int = user_id
-    
-    # Check if we're waiting for an ambassador code from this user
-    if waiting_for_code.get(user_id_int):
-        del waiting_for_code[user_id_int]
+    if waiting_for_code.get(user_id):
+        del waiting_for_code[user_id]
         
         ambassador_code = text.strip()
         
@@ -251,17 +257,14 @@ def handle_message(chat_id, user_id, text):
             send_message(chat_id, "👍 No problem! You can still participate in the group.")
             return
         
-        # Verify the ambassador code exists
         ambassador = supabase_query("ambassadors", f"referrer_code=eq.{ambassador_code}")
         
         if ambassador:
             ambassador_name = ambassador[0].get("username", "someone")
-            telegram_user_id_str = str(user_id_int)
+            telegram_user_id_str = str(user_id)
             
-            # Track that user joined group via this ambassador
             attempt = track_referral_attempt(telegram_user_id_str, ambassador_code, signed_waitlist=False, joined_group=True)
             
-            # Check if they already signed waitlist
             if attempt.get("signed_waitlist", False):
                 award_point(ambassador_code, telegram_user_id_str)
                 send_message(chat_id, 
@@ -280,7 +283,7 @@ def handle_message(chat_id, user_id, text):
                     f"Once you submit, they'll get their point! 🚀")
         else:
             send_message(chat_id, "❌ Invalid ambassador code. Please check and try again.")
-            waiting_for_code[user_id_int] = True  # Allow them to try again
+            waiting_for_code[user_id] = True
 
 # Dictionary to track users waiting to enter ambassador code
 waiting_for_code = {}
@@ -302,11 +305,9 @@ def main():
                 for update in updates.get("result", []):
                     last_id = update["update_id"]
                     
-                    # Handle chat_member updates (when someone joins the group) [citation:2][citation:6]
                     if "chat_member" in update:
                         handle_chat_member_update(update)
                     
-                    # Handle regular messages
                     message = update.get("message", {})
                     if message:
                         chat_id = message.get("chat", {}).get("id")
