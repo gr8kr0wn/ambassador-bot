@@ -9,6 +9,7 @@ TELEGRAM_TOKEN = "8664130966:AAGwmssIWvUzriVHuSML-NIayeqv588Lqf8"
 SUPABASE_URL = "https://vminufdeufycbvlmnkvq.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZtaW51ZmRldWZ5Y2J2bG1ua3ZxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4ODc2ODksImV4cCI6MjA5MTQ2MzY4OX0.AYH9ih3BzAeiC5KK-AVel9l3CCKNYC3JozY4RvY_Ug8"
 GROUP_ID = -1003777573948
+GROUP_INVITE_LINK = "https://t.me/AIAccessCommunity"
 TALLY_FORM_ID = "yPEDzx"
 
 # ===== SUPABASE FUNCTIONS =====
@@ -53,15 +54,18 @@ def supabase_update(table, data, filters):
         return False
 
 # ===== TELEGRAM FUNCTIONS =====
-def send_message(chat_id, text):
+def send_message(chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        data["reply_markup"] = reply_markup
     try:
-        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
+        requests.post(url, json=data, timeout=10)
     except:
         pass
 
-def get_chat_member(user_id):
-    """Direct API call to check if user is in the group"""
+def is_user_in_group(user_id):
+    """Check if user is a member of the Telegram group"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChatMember"
     params = {"chat_id": GROUP_ID, "user_id": user_id}
     try:
@@ -69,25 +73,13 @@ def get_chat_member(user_id):
         if response.ok:
             status = response.json().get("result", {}).get("status")
             return status in ["member", "administrator", "creator"]
-    except:
-        pass
+    except Exception as e:
+        print(f"Group check error: {e}")
     return False
-
-def get_group_members():
-    """Get list of current group members (approximate - works for groups under 200 members)"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChatMembersCount"
-    params = {"chat_id": GROUP_ID}
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        if response.ok:
-            count = response.json().get("result", 0)
-            print(f"📊 Group has approximately {count} members")
-    except:
-        pass
 
 def get_updates(offset=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-    params = {"timeout": 20, "allowed_updates": ["message", "chat_member"]}
+    params = {"timeout": 20}
     if offset:
         params["offset"] = offset
     try:
@@ -96,39 +88,13 @@ def get_updates(offset=None):
     except:
         return {"ok": False, "result": []}
 
-# ===== TRACK NEW MEMBERS USING chat_member UPDATE =====
-def handle_chat_member_update(update):
-    chat_member = update.get("chat_member", {})
-    new_chat_member = chat_member.get("new_chat_member", {})
-    old_chat_member = chat_member.get("old_chat_member", {})
-    
-    chat = chat_member.get("chat", {})
-    chat_id = chat.get("id")
-    
-    if chat_id != GROUP_ID:
-        return
-    
-    old_status = old_chat_member.get("status", "")
-    new_status = new_chat_member.get("status", "")
-    
-    # Check if this is a new member joining
-    is_new_join = (old_status in ["left", "kicked"]) and (new_status in ["member", "administrator", "creator"])
-    
-    if is_new_join:
-        user = new_chat_member.get("user", {})
-        user_id = user.get("id")
-        first_name = user.get("first_name", "User")
-        
-        print(f"👤 New member joined: {first_name} (ID: {user_id})")
-        
-        waiting_for_code[user_id] = True
-        
-        send_message(chat_id, 
-            f"👋 Welcome {first_name}!\n\n"
-            f"Who invited you to this group?\n"
-            f"Please reply with their **ambassador code**.\n\n"
-            f"(If you don't have a code, just type 'none')\n\n"
-            f"💡 Ask your inviter for their code - it's the short code in their invite link!")
+def answer_callback(callback_id):
+    """Answer callback query to remove loading state on button"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery"
+    try:
+        requests.post(url, json={"callback_query_id": callback_id}, timeout=10)
+    except:
+        pass
 
 # ===== REFERRAL TRACKING =====
 def track_referral_attempt(telegram_user_id, ambassador_code, signed_waitlist=False, joined_group=False):
@@ -180,11 +146,13 @@ def process_wl_responses():
         telegram_user_id = response.get("telegram_user_id")
         
         if ambassador_code and telegram_user_id:
-            joined = get_chat_member(telegram_user_id)
+            joined = is_user_in_group(telegram_user_id)
             
             if joined:
                 award_point(ambassador_code, telegram_user_id)
                 print(f"✅ Point awarded to {ambassador_code} for user {telegram_user_id}")
+            else:
+                print(f"⚠️ User {telegram_user_id} submitted form but not in group yet")
         
         supabase_update("wl_responses", {"processed": True}, f"id=eq.{response_id}")
     
@@ -194,6 +162,24 @@ def process_wl_responses():
 def handle_command(chat_id, user_id, username, text):
     user_id_str = str(user_id)
     
+    # First, check if user is in the group (for commands that require it)
+    if text in ["/getlink", "/stats", "/top"]:
+        if not is_user_in_group(user_id):
+            # User not in group - show join button
+            keyboard = {
+                "inline_keyboard": [[
+                    {"text": "🔗 Join AI Access Group", "url": GROUP_INVITE_LINK},
+                    {"text": "✅ I've Joined", "callback_data": "check_join"}
+                ]]
+            }
+            send_message(chat_id, 
+                "⚠️ **You need to join our Telegram group first!**\n\n"
+                "Click the button below to join, then click 'I've Joined' to continue.\n\n"
+                "This is required to participate in the Ambassador Program.",
+                reply_markup=keyboard)
+            return
+    
+    # User is in group - process commands normally
     if text == "/start":
         send_message(chat_id, 
             "🎉 Welcome to AI Access Ambassador Program!\n\n"
@@ -246,52 +232,26 @@ def handle_command(chat_id, user_id, username, text):
     elif text == "/help":
         send_message(chat_id, "Commands: /start, /getlink, /stats, /top")
 
-# ===== MESSAGE HANDLER FOR AMBASSADOR CODE =====
-def handle_message(chat_id, user_id, text):
-    if waiting_for_code.get(user_id):
-        del waiting_for_code[user_id]
-        
-        ambassador_code = text.strip()
-        
-        if ambassador_code.lower() == 'none':
-            send_message(chat_id, "👍 No problem! You can still participate in the group.")
-            return
-        
-        ambassador = supabase_query("ambassadors", f"referrer_code=eq.{ambassador_code}")
-        
-        if ambassador:
-            ambassador_name = ambassador[0].get("username", "someone")
-            telegram_user_id_str = str(user_id)
-            
-            attempt = track_referral_attempt(telegram_user_id_str, ambassador_code, signed_waitlist=False, joined_group=True)
-            
-            if attempt.get("signed_waitlist", False):
-                award_point(ambassador_code, telegram_user_id_str)
-                send_message(chat_id, 
-                    f"🎉 **AMBASSADOR CODE VERIFIED!** 🎉\n\n"
-                    f"You already signed the waitlist!\n"
-                    f"🏆 {ambassador_name} just got a point!\n\n"
-                    f"Thanks for being awesome! 🙌")
-            else:
-                waitlist_link = f"https://tally.so/r/{TALLY_FORM_ID}?referrer_id={ambassador_code}"
-                send_message(chat_id, 
-                    f"✅ **AMBASSADOR CODE VERIFIED!** ✅\n\n"
-                    f"🎉 You found {ambassador_name}'s code!\n\n"
-                    f"📝 **One more step to help them earn a point:**\n"
-                    f"Fill out the waitlist form here:\n"
-                    f"🔗 {waitlist_link}\n\n"
-                    f"Once you submit, they'll get their point! 🚀")
+# ===== CALLBACK QUERY HANDLER (for "I've Joined" button) =====
+def handle_callback_query(callback_query):
+    chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
+    user_id = callback_query.get("from", {}).get("id")
+    data = callback_query.get("data", "")
+    
+    if data == "check_join":
+        if is_user_in_group(user_id):
+            send_message(chat_id, "✅ **Verified!** You're now a member of the group.\n\nYou can now use /getlink to start your ambassador journey! 🚀")
         else:
-            send_message(chat_id, "❌ Invalid ambassador code. Please check and try again.")
-            waiting_for_code[user_id] = True
-
-# Dictionary to track users waiting to enter ambassador code
-waiting_for_code = {}
+            send_message(chat_id, "❌ You haven't joined the group yet.\n\nPlease click the link below to join first, then click 'I've Joined' again.")
+    
+    # Answer the callback to remove loading state
+    answer_callback(callback_query.get("id"))
 
 # ===== MAIN LOOP =====
 def main():
     print("🤖 AI Access Bot is running!")
     print(f"📌 Group ID: {GROUP_ID}")
+    print(f"🔗 Group Invite Link: {GROUP_INVITE_LINK}")
     print("🔄 Waiting for messages...")
     
     last_id = 0
@@ -305,9 +265,11 @@ def main():
                 for update in updates.get("result", []):
                     last_id = update["update_id"]
                     
-                    if "chat_member" in update:
-                        handle_chat_member_update(update)
+                    # Handle callback queries (button clicks)
+                    if "callback_query" in update:
+                        handle_callback_query(update["callback_query"])
                     
+                    # Handle regular messages
                     message = update.get("message", {})
                     if message:
                         chat_id = message.get("chat", {}).get("id")
@@ -316,9 +278,7 @@ def main():
                         text = message.get("text", "")
                         
                         if text and text.startswith("/"):
-                            handle_command(chat_id, str(user_id), username, text)
-                        elif text and waiting_for_code.get(user_id):
-                            handle_message(chat_id, user_id, text)
+                            handle_command(chat_id, user_id, username, text)
             
             # Process wl_responses every 30 seconds
             if time.time() - last_process_time >= 30:
