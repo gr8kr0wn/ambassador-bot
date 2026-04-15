@@ -73,29 +73,31 @@ def get_updates(offset=None):
 # ===== AWARD POINT DIRECTLY FROM WL_RESPONSES =====
 def process_wl_responses():
     """Get unprocessed waitlist responses and award points immediately"""
+    # Look for rows where processed IS NULL OR processed = false
     responses = supabase_query("wl_responses", "processed=is.null")
     
-    print(f"🔍 DEBUG: Found {len(responses)} unprocessed responses")
+    # Also get rows where processed = false
+    responses2 = supabase_query("wl_responses", "processed=eq.false")
     
-    for response in responses:
+    # Combine both
+    all_responses = responses + responses2
+    
+    print(f"🔍 DEBUG: Found {len(all_responses)} unprocessed responses")
+    
+    for response in all_responses:
         response_id = response.get("id")
         ambassador_code = response.get("referrer_code")
         telegram_user_id = response.get("telegram_user_id")
         
-        print(f"🔍 DEBUG: Response ID: {response_id}")
-        print(f"🔍 DEBUG: ambassador_code = '{ambassador_code}'")
-        print(f"🔍 DEBUG: telegram_user_id = '{telegram_user_id}'")
+        print(f"🔍 DEBUG: Processing ID {response_id}: code='{ambassador_code}', user='{telegram_user_id}'")
         
         if ambassador_code and telegram_user_id:
-            # Award point immediately - no group check!
+            # Award point
             ambassador = supabase_query("ambassadors", f"referrer_code=eq.{ambassador_code}")
-            print(f"🔍 DEBUG: Looking for ambassador with code '{ambassador_code}'")
-            print(f"🔍 DEBUG: Found ambassador: {ambassador is not None and len(ambassador) > 0}")
+            print(f"🔍 DEBUG: Ambassador found: {ambassador is not None and len(ambassador) > 0}")
             
             if ambassador and len(ambassador) > 0:
                 current_count = ambassador[0].get("referral_count", 0)
-                print(f"🔍 DEBUG: Current count: {current_count}")
-                
                 supabase_update("ambassadors", {"referral_count": current_count + 1}, f"referrer_code=eq.{ambassador_code}")
                 print(f"✅ Point awarded to {ambassador_code} (now {current_count + 1})")
                 
@@ -107,14 +109,14 @@ def process_wl_responses():
                                 f"Someone signed up using your link!\n"
                                 f"Total points: **{current_count + 1}**")
             else:
-                print(f"❌ ERROR: Ambassador NOT FOUND for code: '{ambassador_code}'")
+                print(f"❌ Ambassador not found for code: '{ambassador_code}'")
         else:
-            print(f"❌ Missing data: ambassador_code={ambassador_code}, telegram_user_id={telegram_user_id}")
+            print(f"⚠️ Missing data in response {response_id}: code='{ambassador_code}', user='{telegram_user_id}'")
         
         # Mark as processed
         supabase_update("wl_responses", {"processed": True}, f"id=eq.{response_id}")
     
-    return len(responses)
+    return len(all_responses)
 
 # ===== BOT COMMAND HANDLERS =====
 def handle_command(chat_id, user_id, username, text):
