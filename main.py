@@ -1,7 +1,6 @@
 import requests
 import uuid
 import time
-import json
 from datetime import datetime
 
 # ===== YOUR CONFIGURATION =====
@@ -21,9 +20,11 @@ def supabase_query(table, filters=None):
         url += f"?{filters}"
     try:
         response = requests.get(url, headers=headers, timeout=10)
-        return response.json() if response.status_code == 200 else []
+        if response.status_code == 200:
+            return response.json()
     except:
-        return []
+        pass
+    return []
 
 def supabase_insert(table, data):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
@@ -70,71 +71,37 @@ def get_updates(offset=None):
     except:
         return {"ok": False, "result": []}
 
-# ===== AWARD POINT DIRECTLY FROM WL_RESPONSES =====
+# ===== PROCESS WL_RESPONSES =====
 def process_wl_responses():
-    """Get unprocessed waitlist responses and award points immediately"""
-    # Look for rows where processed IS NULL OR processed = false
-    responses = supabase_query("wl_responses", "processed=is.null")
+    responses = supabase_query("wl_responses", "processed=eq.false")
     
-    # Also get rows where processed = false
-    responses2 = supabase_query("wl_responses", "processed=eq.false")
-    
-    # Combine both
-    all_responses = responses + responses2
-    
-    print(f"🔍 DEBUG: Found {len(all_responses)} unprocessed responses")
-    
-    for response in all_responses:
+    count = 0
+    for response in responses:
         response_id = response.get("id")
         ambassador_code = response.get("referrer_code")
         telegram_user_id = response.get("telegram_user_id")
         
-        print(f"🔍 DEBUG: Processing ID {response_id}: code='{ambassador_code}', user='{telegram_user_id}'")
-        
         if ambassador_code and telegram_user_id:
-            # Award point
             ambassador = supabase_query("ambassadors", f"referrer_code=eq.{ambassador_code}")
-            print(f"🔍 DEBUG: Ambassador found: {ambassador is not None and len(ambassador) > 0}")
-            
-            if ambassador and len(ambassador) > 0:
+            if ambassador:
                 current_count = ambassador[0].get("referral_count", 0)
                 supabase_update("ambassadors", {"referral_count": current_count + 1}, f"referrer_code=eq.{ambassador_code}")
-                print(f"✅ Point awarded to {ambassador_code} (now {current_count + 1})")
                 
-                # Notify ambassador
                 ambassador_telegram_id = ambassador[0].get("telegram_id")
                 if ambassador_telegram_id:
-                    send_message(int(ambassador_telegram_id), 
-                                f"🎉 **New Referral!** 🎉\n\n"
-                                f"Someone signed up using your link!\n"
-                                f"Total points: **{current_count + 1}**")
-            else:
-                print(f"❌ Ambassador not found for code: '{ambassador_code}'")
-        else:
-            print(f"⚠️ Missing data in response {response_id}: code='{ambassador_code}', user='{telegram_user_id}'")
+                    send_message(int(ambassador_telegram_id), f"🎉 New Referral! Total points: {current_count + 1}")
+                count += 1
         
-        # Mark as processed
         supabase_update("wl_responses", {"processed": True}, f"id=eq.{response_id}")
     
-    return len(all_responses)
+    return count
 
 # ===== BOT COMMAND HANDLERS =====
 def handle_command(chat_id, user_id, username, text):
     user_id_str = str(user_id)
     
     if text == "/start":
-        send_message(chat_id, 
-            "🎉 Welcome to AI Access Ambassador Program!\n\n"
-            "📌 Commands:\n"
-            "/getlink - Get your invite link\n"
-            "/stats - Your referral points\n"
-            "/top - Leaderboard\n"
-            "/process - Manually process pending referrals\n\n"
-            "How it works:\n"
-            "1. Share your invite link\n"
-            "2. Friends sign up using your link\n"
-            "3. You get 1 point for each signup!\n\n"
-            "🚀 Start by sending /getlink")
+        send_message(chat_id, "🎉 Welcome to AI Access Ambassador Program!\n\n/getlink - Get your invite link\n/stats - Your points\n/top - Leaderboard")
     
     elif text == "/getlink":
         code = str(uuid.uuid4())[:8]
@@ -151,7 +118,7 @@ def handle_command(chat_id, user_id, username, text):
             code = existing[0]["referrer_code"]
         
         link = f"https://tally.so/r/{TALLY_FORM_ID}?referrer_id={code}"
-        send_message(chat_id, f"🔗 YOUR INVITE LINK:\n\n{link}\n\nShare this link with friends! Each signup = 1 point!")
+        send_message(chat_id, f"🔗 Your invite link:\n{link}")
     
     elif text == "/stats":
         result = supabase_query("ambassadors", f"telegram_id=eq.{user_id_str}")
@@ -159,34 +126,25 @@ def handle_command(chat_id, user_id, username, text):
             count = result[0].get("referral_count", 0)
             send_message(chat_id, f"📊 You've referred {count} people!")
         else:
-            send_message(chat_id, "Type /getlink first to register as an ambassador!")
+            send_message(chat_id, "Type /getlink first to register!")
     
     elif text == "/top":
         result = supabase_query("ambassadors", "order=referral_count.desc&limit=10")
         if result:
             msg = "🏆 TOP 10 AMBASSADORS 🏆\n\n"
             for i, p in enumerate(result, 1):
-                name = p.get("username", "Anonymous")[:15]
-                count = p.get("referral_count", 0)
-                msg += f"{i}. {name} — {count} point{'s' if count != 1 else ''}\n"
+                msg += f"{i}. {p.get('username', 'Anonymous')} — {p.get('referral_count', 0)} points\n"
             send_message(chat_id, msg)
         else:
-            send_message(chat_id, "No ambassadors yet! Be the first!")
+            send_message(chat_id, "No ambassadors yet!")
     
     elif text == "/process":
         count = process_wl_responses()
-        send_message(chat_id, f"✅ Processed {count} pending referrals manually")
-        print(f"Manual process: {count} responses processed")
-    
-    elif text == "/help":
-        send_message(chat_id, "Commands: /start, /getlink, /stats, /top, /process")
+        send_message(chat_id, f"✅ Processed {count} pending referrals")
 
 # ===== MAIN LOOP =====
 def main():
-    print("🤖 AI Access Bot is running (Simplified - No Group Check)!")
-    print("🔄 Points awarded immediately when someone fills the Tally form")
-    print("🔄 Waiting for messages...")
-    
+    print("🤖 AI Access Bot is running!")
     last_id = 0
     last_process_time = time.time()
     
@@ -197,7 +155,6 @@ def main():
             if updates.get("ok"):
                 for update in updates.get("result", []):
                     last_id = update["update_id"]
-                    
                     message = update.get("message", {})
                     if message:
                         chat_id = message.get("chat", {}).get("id")
@@ -208,11 +165,8 @@ def main():
                         if text and text.startswith("/"):
                             handle_command(chat_id, user_id, username, text)
             
-            # Process wl_responses every 10 seconds
-            if time.time() - last_process_time >= 10:
-                count = process_wl_responses()
-                if count > 0:
-                    print(f"✅ Awarded points for {count} new signups")
+            if time.time() - last_process_time >= 30:
+                process_wl_responses()
                 last_process_time = time.time()
             
         except Exception as e:
