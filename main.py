@@ -1,10 +1,11 @@
 import requests
 import uuid
 import time
+import os
 from datetime import datetime
 
-# ===== YOUR CONFIGURATION =====
-TELEGRAM_TOKEN = "8664130966:AAGwmssIWvUzriVHuSML-NIayeqv588Lqf8"
+# ===== YOUR CONFIGURATION (from environment variables) =====
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8664130966:AAGwmssIWvUzriVHuSML-NIayeqv588Lqf8")
 SUPABASE_URL = "https://vminufdeufycbvlmnkvq.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZtaW51ZmRldWZ5Y2J2bG1ua3ZxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4ODc2ODksImV4cCI6MjA5MTQ2MzY4OX0.AYH9ih3BzAeiC5KK-AVel9l3CCKNYC3JozY4RvY_Ug8"
 TALLY_FORM_ID = "yPEDzx"
@@ -144,7 +145,7 @@ def handle_command(chat_id, user_id, username, text):
 
 # ===== MAIN LOOP =====
 def main():
-    print("🤖 AI Access Bot is running!")
+    print("🤖 AI Access Bot is running on Kuberns!")
     last_id = 0
     last_process_time = time.time()
     
