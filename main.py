@@ -2,6 +2,8 @@ import requests
 import uuid
 import time
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
 # ===== YOUR CONFIGURATION (from environment variables) =====
@@ -9,6 +11,21 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8664130966:AAGwmssIWvUzriVHuS
 SUPABASE_URL = "https://vminufdeufycbvlmnkvq.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZtaW51ZmRldWZ5Y2J2bG1ua3ZxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4ODc2ODksImV4cCI6MjA5MTQ2MzY4OX0.AYH9ih3BzAeiC5KK-AVel9l3CCKNYC3JozY4RvY_Ug8"
 TALLY_FORM_ID = "yPEDzx"
+
+# ===== HEALTH CHECK SERVER =====
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        pass  # Suppress HTTP server logs
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 8000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
 
 # ===== SUPABASE FUNCTIONS =====
 def supabase_query(table, filters=None):
@@ -146,6 +163,11 @@ def handle_command(chat_id, user_id, username, text):
 # ===== MAIN LOOP =====
 def main():
     print("🤖 AI Access Bot is running on Kuberns!")
+
+    # Start health check HTTP server in background thread
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
+
     last_id = 0
     last_process_time = time.time()
     
